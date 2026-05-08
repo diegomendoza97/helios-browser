@@ -21,9 +21,14 @@ final class HeliosCEFAppDelegate: NSObject, NSApplicationDelegate {
         RunLoop.main.add(messageLoopTimer!, forMode: .common)
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Stop the timer first so no more CEF work is pumped
         messageLoopTimer?.invalidate()
         messageLoopTimer = nil
+        return .terminateNow
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
         HeliosCEFShutdown()
     }
 }

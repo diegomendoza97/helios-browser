@@ -9,6 +9,10 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Call once at app launch (e.g. from AppDelegate). Uses main bundle for paths.
 void HeliosCEFInitialize(void);
 
@@ -20,6 +24,10 @@ void HeliosCEFDoMessageLoopWork(void);
 
 // Returns YES if CEF was successfully initialized.
 BOOL HeliosCEFIsInitialized(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 @protocol HeliosCEFBrowserViewDelegate <NSObject>
 @optional

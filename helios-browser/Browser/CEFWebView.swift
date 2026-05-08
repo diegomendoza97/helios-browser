@@ -19,9 +19,12 @@ struct CEFWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> HeliosCEFBrowserView {
         let view = HeliosCEFBrowserView(frame: .zero)
         view.delegate = context.coordinator
-        cefViewRef = view
+        // Defer binding update to avoid "Modifying state during view update"
+        DispatchQueue.main.async {
+            cefViewRef = view
+        }
         if let url = url {
-            view.loadURL(url)
+            view.load(url)
             context.coordinator.lastLoadedURL = url
         }
         return view
@@ -30,7 +33,7 @@ struct CEFWebView: NSViewRepresentable {
     func updateNSView(_ view: HeliosCEFBrowserView, context: Context) {
         guard let newURL = url else { return }
         if newURL != context.coordinator.lastLoadedURL {
-            view.loadURL(newURL)
+            view.load(newURL)
             context.coordinator.lastLoadedURL = newURL
         }
     }
@@ -49,7 +52,7 @@ struct CEFWebView: NSViewRepresentable {
             self.tabID = tabID
         }
 
-        func cefBrowserView(_ view: NSView, didLoadURL url: URL?, title: String, canGoBack: Bool, canGoForward: Bool, loading: Bool) {
+        func cefBrowserView(_ view: NSView, didLoad url: URL?, title: String, canGoBack: Bool, canGoForward: Bool, loading: Bool) {
             if let url = url {
                 lastLoadedURL = url
             }

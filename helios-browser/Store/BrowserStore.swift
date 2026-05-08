@@ -30,7 +30,7 @@ final class BrowserStore: ObservableObject {
     init() {
         let defaultTab = Tab(
             title: "",
-            url: URL(string: "https://apple.com"),
+            url: URL(string: "https://www.apple.com"),
             canGoBack: false,
             canGoForward: false
         )
