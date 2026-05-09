@@ -2,7 +2,8 @@
 //  HeliosCEFAppDelegate.swift
 //  helios-browser
 //
-//  Initializes CEF at launch, runs message loop via timer, shuts down on terminate.
+//  Initializes CEF at launch and pumps CefDoMessageLoopWork on a timer (required for rendering with
+//  multi_threaded_message_loop / external_message_pump disabled).
 //
 
 import AppKit
@@ -22,14 +23,24 @@ final class HeliosCEFAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        // Stop the timer first so no more CEF work is pumped
         messageLoopTimer?.invalidate()
         messageLoopTimer = nil
-        return .terminateNow
+        // Defer termination until CEF browsers close; a tight CefDoMessageLoopWork-only loop during
+        // applicationWillTerminate blocks the run loop and can prevent OnBeforeClose from firing.
+        DispatchQueue.main.async {
+            NSLog("[Helios] Starting CEF teardown on main queue (watch for 'CefShutdown returned')")
+            HeliosCEFShutdownWithCompletion {
+                NSLog("[Helios] CEF teardown finished; allowing app to quit")
+                NSApp.reply(toApplicationShouldTerminate: true)
+            }
+        }
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        HeliosCEFShutdown()
+        // CEF teardown runs in applicationShouldTerminate (before NSApp.reply). Do not call
+        // HeliosCEFShutdown() here — nested CFRunLoop during shutdown can deliver this while still
+        // inside HeliosPerformCEFShutdownNow and stall termination (re-entrancy / double CefShutdown).
     }
 }
 #endif

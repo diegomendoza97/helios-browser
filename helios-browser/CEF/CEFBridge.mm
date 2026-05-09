@@ -7,6 +7,9 @@
 
 #import "CEFBridge.h"
 #import <Foundation/Foundation.h>
+#import <CoreFoundation/CoreFoundation.h>
+#include <atomic>
+#include <unistd.h>
 
 #if USE_CEF
 #include "include/cef_app.h"
@@ -19,6 +22,13 @@
 #include "include/cef_sandbox_mac.h"
 #include "include/wrapper/cef_helpers.h"
 #include "include/wrapper/cef_library_loader.h"
+
+namespace {
+std::atomic<int> g_helios_live_browser_count{0};
+}  // namespace
+
+static bool g_cef_initialized = false;
+static std::atomic<bool> g_cef_shutdown_in_progress{false};
 
 // MARK: - CEF App (process-level)
 
@@ -75,6 +85,7 @@ public:
 
     void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
         browser_ = browser;
+        g_helios_live_browser_count++;
         if (browser_ && browser_->GetHost()) {
             browser_->GetHost()->WasResized();
             browser_->GetHost()->Invalidate(PET_VIEW);
@@ -92,6 +103,7 @@ public:
 
     void OnBeforeClose(CefRefPtr<CefBrowser> browser) override {
         browser_ = nullptr;
+        g_helios_live_browser_count--;
     }
 
     void OnLoadStart(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, TransitionType transition_type) override {
@@ -172,9 +184,58 @@ private:
 
 // MARK: - CEF init/shutdown state
 
-static bool g_cef_initialized = false;
 static CefScopedLibraryLoader g_library_loader;
 NSString * const HeliosCEFDidInitializeNotification = @"HeliosCEFDidInitializeNotification";
+NSString * const HeliosCEFWillShutdownNotification = @"HeliosCEFWillShutdownNotification";
+
+static void HeliosPerformCEFShutdownNow(void) {
+    if (!g_cef_initialized) {
+        return;
+    }
+    // Ignore nested attempts (e.g. if something spins a nested run loop during teardown).
+    bool expected = false;
+    if (!g_cef_shutdown_in_progress.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        NSLog(@"[Helios] CEF shutdown re-entry skipped (nested run loop / delegate)");
+        return;
+    }
+
+    NSLog(@"[Helios] CEF shutdown: requesting CloseBrowser on all views");
+    [[NSNotificationCenter defaultCenter] postNotificationName:HeliosCEFWillShutdownNotification object:nil];
+
+    // Do NOT call CFRunLoopRunInMode here: it processes AppKit events and can re-enter termination
+    // handlers while this function is still running, which previously left terminateLater waiting forever.
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:8.0];
+    while (g_helios_live_browser_count.load(std::memory_order_acquire) > 0 &&
+           [deadline timeIntervalSinceNow] > 0) {
+        CefDoMessageLoopWork();
+        // Tiny run-loop slice so AppKit/CEF can finish closing; avoid long CFRunLoopRunInMode (stalls quit).
+        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                                 beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.002]];
+        usleep(1000);
+    }
+    if (g_helios_live_browser_count.load() > 0) {
+        NSLog(@"[Helios] ERROR: browsers still open after pump — skipping CefShutdown (would hang). "
+              @"Helpers may linger until the OS reaps the process.");
+        g_cef_initialized = false;
+        g_cef_shutdown_in_progress = false;
+        return;
+    }
+
+    NSLog(@"[Helios] CEF shutdown: brief drain before CefShutdown");
+    NSDate *drainUntil = [NSDate dateWithTimeIntervalSinceNow:1.25];
+    while ([drainUntil timeIntervalSinceNow] > 0) {
+        CefDoMessageLoopWork();
+        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                                 beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.002]];
+        usleep(1500);
+    }
+
+    NSLog(@"[Helios] Calling CefShutdown...");
+    CefShutdown();
+    g_cef_initialized = false;
+    g_cef_shutdown_in_progress = false;
+    NSLog(@"[Helios] CefShutdown returned");
+}
 
 static void HeliosForceResizeDescendants(NSView *root, NSRect bounds) {
     if (!root) return;
@@ -206,6 +267,7 @@ void HeliosCEFInitialize(void) {
     settings.no_sandbox = true;
     settings.windowless_rendering_enabled = false;
     settings.multi_threaded_message_loop = false;
+    settings.external_message_pump = false;
 
     // Set cache path to avoid process singleton warning
     NSString *cachePath = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject
@@ -259,9 +321,18 @@ void HeliosCEFInitialize(void) {
 }
 
 void HeliosCEFShutdown(void) {
-    if (!g_cef_initialized) return;
-    CefShutdown();
-    g_cef_initialized = false;
+    if (!g_cef_initialized) {
+        return;
+    }
+    // Match the thread that called CefInitialize (AppKit main); avoids crashes if a nested
+    // runloop ever delivered termination on another QoS/thread.
+    if ([NSThread isMainThread]) {
+        HeliosPerformCEFShutdownNow();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            HeliosPerformCEFShutdownNow();
+        });
+    }
 }
 
 void HeliosCEFDoMessageLoopWork(void) {
@@ -271,6 +342,27 @@ void HeliosCEFDoMessageLoopWork(void) {
 
 BOOL HeliosCEFIsInitialized(void) {
     return g_cef_initialized ? YES : NO;
+}
+
+extern "C" void HeliosCEFShutdownWithCompletion(void (^completion)(void)) {
+    void (^finish)(void) = ^{
+        if (completion) {
+            completion();
+        }
+    };
+    if (!g_cef_initialized) {
+        finish();
+        return;
+    }
+    void (^work)(void) = ^{
+        HeliosPerformCEFShutdownNow();
+        finish();
+    };
+    if ([NSThread isMainThread]) {
+        work();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), work);
+    }
 }
 
 // MARK: - HeliosCEFBrowserView
@@ -289,8 +381,19 @@ BOOL HeliosCEFIsInitialized(void) {
         _canGoBack = NO;
         _canGoForward = NO;
         _waitingForCEF = NO;
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(heliosCEFWillShutdown:)
+                                                     name:HeliosCEFWillShutdownNotification
+                                                   object:nil];
     }
     return self;
+}
+
+- (void)heliosCEFWillShutdown:(NSNotification *)notification {
+    if (_cefClient && _cefClient->browser() && _cefClient->browser()->GetHost()) {
+        NSLog(@"[Helios] CloseBrowser(true) for app shutdown");
+        _cefClient->browser()->GetHost()->CloseBrowser(true);
+    }
 }
 
 - (void)viewDidMoveToWindow {
@@ -466,9 +569,16 @@ BOOL HeliosCEFIsInitialized(void) {
 
 #else // !USE_CEF
 
+NSString * const HeliosCEFWillShutdownNotification = @"HeliosCEFWillShutdownNotification";
+
 // Stub implementation when CEF is not linked
 void HeliosCEFInitialize(void) {}
 void HeliosCEFShutdown(void) {}
+extern "C" void HeliosCEFShutdownWithCompletion(void (^completion)(void)) {
+    if (completion) {
+        completion();
+    }
+}
 void HeliosCEFDoMessageLoopWork(void) {}
 BOOL HeliosCEFIsInitialized(void) { return NO; }
 

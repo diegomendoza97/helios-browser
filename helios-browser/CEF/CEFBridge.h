@@ -16,14 +16,21 @@ extern "C" {
 // Call once at app launch (e.g. from AppDelegate). Uses main bundle for paths.
 void HeliosCEFInitialize(void);
 
-// Call once before app terminates.
+// Call once before app terminates. Closes all browsers, pumps CEF work, then shuts down.
 void HeliosCEFShutdown(void);
+
+// Posted on the main thread immediately before closing browsers during shutdown.
+FOUNDATION_EXPORT NSString * const HeliosCEFWillShutdownNotification;
 
 // Call periodically (e.g. from a timer) to run CEF message loop work.
 void HeliosCEFDoMessageLoopWork(void);
 
 // Returns YES if CEF was successfully initialized.
 BOOL HeliosCEFIsInitialized(void);
+
+// Runs browser teardown + CefShutdown on the main thread, then invokes completion (also on main).
+// Use with NSApplication.TerminateReply.terminateLater and NSApp.reply(toApplicationShouldTerminate:).
+void HeliosCEFShutdownWithCompletion(void (^ _Nullable completion)(void));
 
 #ifdef __cplusplus
 }
