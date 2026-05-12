@@ -14,6 +14,11 @@ final class HeliosCEFAppDelegate: NSObject, NSApplicationDelegate {
 
     private var messageLoopTimer: Timer?
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // Before CEF runs: Chromium expects -[NSApplication isHandlingSendEvent]; SwiftUI's subclass does not implement it.
+        HeliosAppKitApplicationShim.installIsHandlingSendEventIfNeeded()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         HeliosCEFInitialize()
         messageLoopTimer = Timer.scheduledTimer(withTimeInterval: 0.01, repeats: true) { _ in

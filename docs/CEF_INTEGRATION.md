@@ -111,6 +111,17 @@ If you see crashes or “Helper”/subprocess errors, double-check:
 - Helper app is present at `Contents/Frameworks/helios-browser Helper.app` (or the name CEF expects).
 - CEF initialization runs once at app launch (see `HeliosCEFAppDelegate` and `HeliosCEFInitialize()`).
 
+## Milestone 1 — acceptance criteria
+
+Use this as a quick “CEF shell is done” checklist:
+
+- App launches
+- CEF initializes correctly
+- One browser view loads a real site (e.g. google.com)
+- Address bar loads URLs
+- App quits cleanly; no orphan CEF subprocesses after quit (verify with `pgrep` after the Dock icon is gone)
+- Back, forward, and reload work
+
 ## 5. Switching back to WebKit
 
 To use WebKit again:

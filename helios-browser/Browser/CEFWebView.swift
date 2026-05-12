@@ -15,11 +15,24 @@ struct CEFWebView: NSViewRepresentable {
     let url: URL?
     let store: BrowserStore
     @Binding var cefViewRef: HeliosCEFBrowserView?
+    /// AppKit clips CEF’s composited output; SwiftUI `clipShape` alone often leaves square bottom corners.
+    var hostCornerRadius: CGFloat = 0
 
     func makeNSView(context: Context) -> HeliosCEFBrowserView {
         let view = HeliosCEFBrowserView(frame: .zero)
+        // Prevent CEF child NSView from spilling outside this host and stealing toolbar hit-testing.
+        view.wantsLayer = true
+        view.layer?.masksToBounds = true
+        Self.applyLayerCornerRadius(to: view, radius: hostCornerRadius)
+        view.autoresizesSubviews = true
+        view.setContentHuggingPriority(.defaultLow, for: .vertical)
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         view.delegate = context.coordinator
-        // Defer binding update to avoid "Modifying state during view update"
+        // Target for toolbar navigation immediately (makeNSView runs on the main thread).
+        store.navigationCEFView = view
+        // Defer @State binding update to avoid "Modifying state during view update"
         DispatchQueue.main.async {
             cefViewRef = view
         }
@@ -31,6 +44,7 @@ struct CEFWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ view: HeliosCEFBrowserView, context: Context) {
+        Self.applyLayerCornerRadius(to: view, radius: hostCornerRadius)
         guard let newURL = url else { return }
         if newURL != context.coordinator.lastLoadedURL {
             view.load(newURL)
@@ -38,8 +52,28 @@ struct CEFWebView: NSViewRepresentable {
         }
     }
 
+    private static func applyLayerCornerRadius(to view: NSView, radius: CGFloat) {
+        guard let layer = view.layer else { return }
+        if radius > 0.5 {
+            layer.cornerRadius = radius
+            layer.cornerCurve = .continuous
+            layer.masksToBounds = true
+        } else {
+            layer.cornerRadius = 0
+            layer.masksToBounds = true
+        }
+    }
+
     func makeCoordinator() -> Coordinator {
         Coordinator(store: store, tabID: tabID)
+    }
+
+    static func dismantleNSView(_ nsView: HeliosCEFBrowserView, coordinator: Coordinator) {
+        DispatchQueue.main.async {
+            if coordinator.store.navigationCEFView === nsView {
+                coordinator.store.navigationCEFView = nil
+            }
+        }
     }
 
     class Coordinator: NSObject, HeliosCEFBrowserViewDelegate {
@@ -56,11 +90,14 @@ struct CEFWebView: NSViewRepresentable {
             if let url = url {
                 lastLoadedURL = url
             }
-            Task { @MainActor in
-                store.updateTab(id: tabID, url: url, title: title.isEmpty ? nil : title)
-                store.updateTab(id: tabID, canGoBack: canGoBack, canGoForward: canGoForward)
-                store.setLoading(loading)
-            }
+            store.applyTabNavigationState(
+                id: tabID,
+                url: url,
+                title: title.isEmpty ? nil : title,
+                canGoBack: canGoBack,
+                canGoForward: canGoForward,
+                loading: loading
+            )
         }
     }
 }

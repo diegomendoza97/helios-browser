@@ -16,13 +16,19 @@ struct WebView: NSViewRepresentable {
     let url: URL?
     let store: BrowserStore
     @Binding var webViewRef: WKWebView?
+    var hostCornerRadius: CGFloat = 0
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.allowsMagnification = true
+        webView.setContentHuggingPriority(.defaultLow, for: .vertical)
+        webView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        webView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        webView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         webView.wantsLayer = true
+        applyLayerCornerRadius(to: webView, radius: hostCornerRadius)
         webViewRef = webView
         if let url = url {
             webView.load(URLRequest(url: url))
@@ -31,10 +37,23 @@ struct WebView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
+        applyLayerCornerRadius(to: webView, radius: hostCornerRadius)
         guard let newURL = url else { return }
         // Only load if this is a user-driven URL change (e.g. address bar), not every time we get a redirect.
         if webView.url != newURL {
             webView.load(URLRequest(url: newURL))
+        }
+    }
+
+    private func applyLayerCornerRadius(to webView: WKWebView, radius: CGFloat) {
+        guard let layer = webView.layer else { return }
+        if radius > 0.5 {
+            layer.cornerRadius = radius
+            layer.cornerCurve = .continuous
+            layer.masksToBounds = true
+        } else {
+            layer.cornerRadius = 0
+            layer.masksToBounds = true
         }
     }
 
@@ -60,14 +79,25 @@ final class WebViewCoordinator: NSObject, WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        store.setLoading(false)
-        store.updateTab(id: tabID, url: webView.url, title: webView.title)
-        store.updateTab(id: tabID, canGoBack: webView.canGoBack, canGoForward: webView.canGoForward)
+        store.applyTabNavigationState(
+            id: tabID,
+            url: webView.url,
+            title: webView.title,
+            canGoBack: webView.canGoBack,
+            canGoForward: webView.canGoForward,
+            loading: false
+        )
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        store.setLoading(false)
-        store.updateTab(id: tabID, canGoBack: webView.canGoBack, canGoForward: webView.canGoForward)
+        store.applyTabNavigationState(
+            id: tabID,
+            url: webView.url,
+            title: webView.title,
+            canGoBack: webView.canGoBack,
+            canGoForward: webView.canGoForward,
+            loading: false
+        )
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {

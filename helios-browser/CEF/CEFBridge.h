@@ -47,6 +47,10 @@ void HeliosCEFShutdownWithCompletion(void (^ _Nullable completion)(void));
 - (void)goBack;
 - (void)goForward;
 - (void)reload;
+// Explicitly named navigation APIs used from Swift to avoid responder-action naming ambiguity.
+- (void)navigateBack;
+- (void)navigateForward;
+- (void)reloadPage;
 @property (nonatomic, readonly) BOOL canGoBack;
 @property (nonatomic, readonly) BOOL canGoForward;
 @property (nonatomic, readonly) BOOL loading;

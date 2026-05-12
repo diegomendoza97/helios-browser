@@ -25,6 +25,12 @@
 
 namespace {
 std::atomic<int> g_helios_live_browser_count{0};
+
+void HeliosPumpCEFMessageLoop(unsigned iterations) {
+    for (unsigned i = 0; i < iterations; i++) {
+        CefDoMessageLoopWork();
+    }
+}
 }  // namespace
 
 static bool g_cef_initialized = false;
@@ -65,6 +71,8 @@ private:
 - (void)updateFromBrowser;
 - (void)notifyStateChange;
 - (void)browserDidCreate;
+- (void)applyLoadingStateFromCEF:(BOOL)isLoading canGoBack:(BOOL)canGoBack canGoForward:(BOOL)canGoForward;
+- (void)syncNavigationFlagsFromBrowser;
 @end
 
 // MARK: - CEF Client (browser-level) and handlers
@@ -113,6 +121,7 @@ public:
             HeliosCEFBrowserView *v = view_;
             dispatch_async(dispatch_get_main_queue(), ^{
                 [v setLoading:YES];
+                [v syncNavigationFlagsFromBrowser];
                 [v notifyStateChange];
             });
         }
@@ -153,6 +162,25 @@ public:
               isLoading ? 1 : 0,
               canGoBack ? 1 : 0,
               canGoForward ? 1 : 0);
+        HeliosCEFBrowserView *v = view_;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [v applyLoadingStateFromCEF:isLoading ? YES : NO
+                             canGoBack:canGoBack ? YES : NO
+                          canGoForward:canGoForward ? YES : NO];
+        });
+    }
+
+    void OnAddressChange(CefRefPtr<CefBrowser> browser,
+                         CefRefPtr<CefFrame> frame,
+                         const CefString& url) override {
+        if (!frame->IsMain()) {
+            return;
+        }
+        // SPAs (e.g. YouTube) update the URL without a full load; refresh CanGoBack/CanGoForward from the browser.
+        HeliosCEFBrowserView *v = view_;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [v updateFromBrowser];
+        });
     }
 
     void OnRenderProcessTerminated(CefRefPtr<CefBrowser> browser,
@@ -499,6 +527,22 @@ extern "C" void HeliosCEFShutdownWithCompletion(void (^completion)(void)) {
     [self notifyStateChange];
 }
 
+- (void)applyLoadingStateFromCEF:(BOOL)isLoading canGoBack:(BOOL)canGoBack canGoForward:(BOOL)canGoForward {
+    _loading = isLoading;
+    _canGoBack = canGoBack;
+    _canGoForward = canGoForward;
+    [self notifyStateChange];
+}
+
+- (void)syncNavigationFlagsFromBrowser {
+    if (!_cefClient || !_cefClient->browser()) {
+        return;
+    }
+    CefRefPtr<CefBrowser> b = _cefClient->browser();
+    _canGoBack = b->CanGoBack();
+    _canGoForward = b->CanGoForward();
+}
+
 - (void)notifyStateChange {
     id<HeliosCEFBrowserViewDelegate> d = self.delegate;
     if (!d) return;
@@ -513,8 +557,8 @@ extern "C" void HeliosCEFShutdownWithCompletion(void (^completion)(void)) {
                     url = [NSURL URLWithString:[NSString stringWithUTF8String:u.c_str()]];
                 }
             }
-            _canGoBack = _cefClient->browser()->CanGoBack();
-            _canGoForward = _cefClient->browser()->CanGoForward();
+            // Do not overwrite _canGoBack / _canGoForward here: OnLoadingStateChange already
+            // delivered the authoritative values, and browser()->CanGoBack() can briefly lag.
         }
         std::string t = _cefClient->GetPageTitle();
         if (!t.empty()) {
@@ -539,23 +583,43 @@ extern "C" void HeliosCEFShutdownWithCompletion(void (^completion)(void)) {
     }
 }
 
-- (void)goBack {
-    if (_cefClient && _cefClient->browser() && _cefClient->browser()->CanGoBack()) {
-        _cefClient->browser()->GoBack();
+- (void)navigateBack {
+    if (!_cefClient || !_cefClient->browser() || !_cefClient->browser()->GetHost()) {
+        NSLog(@"[Helios] navigateBack: no browser");
+        return;
     }
+    NSLog(@"[Helios] navigateBack invoked");
+    _cefClient->browser()->GetHost()->SetFocus(true);
+    _cefClient->browser()->GoBack();
+    // Navigation is scheduled; pump now so the UI thread doesn't wait for the next timer tick.
+    HeliosPumpCEFMessageLoop(96);
 }
 
-- (void)goForward {
-    if (_cefClient && _cefClient->browser() && _cefClient->browser()->CanGoForward()) {
-        _cefClient->browser()->GoForward();
+- (void)navigateForward {
+    if (!_cefClient || !_cefClient->browser() || !_cefClient->browser()->GetHost()) {
+        NSLog(@"[Helios] navigateForward: no browser");
+        return;
     }
+    NSLog(@"[Helios] navigateForward invoked");
+    _cefClient->browser()->GetHost()->SetFocus(true);
+    _cefClient->browser()->GoForward();
+    HeliosPumpCEFMessageLoop(96);
 }
 
-- (void)reload {
-    if (_cefClient && _cefClient->browser()) {
-        _cefClient->browser()->Reload();
+- (void)reloadPage {
+    if (!_cefClient || !_cefClient->browser() || !_cefClient->browser()->GetHost()) {
+        NSLog(@"[Helios] reloadPage: no browser");
+        return;
     }
+    NSLog(@"[Helios] reloadPage invoked");
+    _cefClient->browser()->GetHost()->SetFocus(true);
+    _cefClient->browser()->Reload();
+    HeliosPumpCEFMessageLoop(96);
 }
+
+- (void)goBack { [self navigateBack]; }
+- (void)goForward { [self navigateForward]; }
+- (void)reload { [self reloadPage]; }
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
@@ -593,6 +657,9 @@ BOOL HeliosCEFIsInitialized(void) { return NO; }
 - (void)goBack {}
 - (void)goForward {}
 - (void)reload {}
+- (void)navigateBack {}
+- (void)navigateForward {}
+- (void)reloadPage {}
 @end
 
 #endif
